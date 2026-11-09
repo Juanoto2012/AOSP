@@ -1,152 +1,118 @@
-name: Build ReArrowOS ROM
+name: Build LineageOS 19 - ginkgo
 
 on:
   workflow_dispatch:
     inputs:
-      SYNC_URL:
-        description: 'SYNC_URL'
+      branch:
+        description: "LineageOS branch"
         required: true
-        default: 'https://github.com/ArrowOS/android_manifest.git'
-      MANIFEST_BRANCH:
-        description: 'MANIFEST_BRANCH'
-        required: true
-        default: 'arrow-13.1'
-      DEVICE_TREE_URL:
-        description: 'DEVICE_TREE_URL'
-        required: true
-        default: 'https://github.com'
-      DEVICE_TREE_BRANCH:
-        description: 'DEVICE_TREE_BRANCH'
-        required: true
-        default: 'arrow-13.1'
-      DEVICE_PATH:
-        description: 'DEVICE_PATH'
-        required: true
-        default: 'device/xiaomi/ginkgo'
-      COMMON_TREE_URL:
-        description: 'COMMON_TREE_URL (leave blank if not needed)'
-        required: false
-        default: ''
-      COMMON_PATH:
-        description: 'COMMON_PATH (leave blank if not needed)'
-        required: false
-        default: ''
-      DEVICE_NAME:
-        description: 'DEVICE_NAME'
-        required: true
-        default: 'ginkgo'
-      MAKEFILE_NAME:
-        description: 'MAKEFILE_NAME'
-        required: true
-        default: 'arrow_ginkgo-userdebug'
+        default: "lineage-19.0"
+
+env:
+  DEVICE: ginkgo
+  BUILD_DIR: /srv/android/lineage
 
 jobs:
-  build-arrowos:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
+  build:
+    runs-on: [self-hosted, linux, x64, android-builder]
+    timeout-minutes: 600
+
     steps:
-    - name: Check if sender is repository owner
-      if: github.event.repository.owner.login == github.event.sender.login
-      run: |
-        echo "Sender is the repository owner"
-    - name: Not the repository owner
-      if: github.event.repository.owner.login != github.event.sender.login
-      run: |
-        echo "Sender is not the repository owner"
-        exit 1
+      - name: Check resources
+        run: |
+          echo "=== CPU ===" && nproc
+          echo "=== RAM ===" && free -h
+          echo "=== Disk ===" && df -h /srv
 
-    - name: Cleanup
-      uses: rokibhasansagar/slimhub_actions@main
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            git git-lfs curl wget rsync \
+            openjdk-17-jdk \
+            ccache schedtool \
+            python3 python3-pip \
+            libssl-dev libxml2-dev libxslt1-dev \
+            zlib1g-dev
 
-    - name: Initialize workspace
-      run: |
-        mkdir workspace
-        cd workspace
-        echo "workspace-folder=$(pwd)" >> $GITHUB_OUTPUT
-      id: pwd
-      
-    - name: Setup Java
-      uses: actions/setup-java@v4
-      with:
-        distribution: 'oracle'
-        java-version: 22
-      
-    - name: Prepare the build environment
-      run: |
-        cd ${{ steps.pwd.outputs.workspace-folder }}
-        sudo apt install git aria2 ccache -y
-        sudo curl --create-dirs -L -o /usr/local/bin/repo -O -L https://storage.googleapis.com/git-repo-downloads/repo
-        sudo chmod a+rx /usr/local/bin/repo
-        mkdir ${{ steps.pwd.outputs.workspace-folder }}/ccache
-        export USE_CCACHE=1
-        export CCACHE_DIR=${{ steps.pwd.outputs.workspace-folder }}/ccache/
-        ccache -M 50G
-      working-directory: ${{ steps.pwd.outputs.workspace-folder }}
+      - name: Install repo tool
+        run: |
+          mkdir -p ~/bin
+          curl https://storage.googleapis.com/git-repo-downloads/repo > ~/bin/repo
+          chmod a+x ~/bin/repo
+          echo 'export PATH=~/bin:$PATH' >> ~/.bashrc
+          source ~/.bashrc
 
-    - name: Clone and sync ArrowOS sources
-      run: |
-        cd ${{ steps.pwd.outputs.workspace-folder }}
-        mkdir arrow
-        cd arrow
-        repo init -u ${{ github.event.inputs.SYNC_URL }} -b ${{ github.event.inputs.MANIFEST_BRANCH }}
-        repo sync
-      working-directory: ${{ steps.pwd.outputs.workspace-folder }}
+      - name: Configure git
+        run: |
+          git config --global user.email "ci@github.com"
+          git config --global user.name "CI"
+          git lfs install
 
-    - name: Clone device tree
-      run: |
-        cd ${{ steps.pwd.outputs.workspace-folder }}/arrow/
-        git clone ${{ github.event.inputs.DEVICE_TREE_URL }} -b ${{ github.event.inputs.DEVICE_TREE_BRANCH }} ./${{ github.event.inputs.DEVICE_PATH }}
-      working-directory: ${{ steps.pwd.outputs.workspace-folder }}
+      - name: Initialize repo
+        working-directory: ${{ env.BUILD_DIR }}
+        run: |
+          repo init -u https://github.com/LineageOS/android.git \
+                    -b ${{ github.event.inputs.branch }} \
+                    --git-lfs --no-clone-bundle
 
-    - name: Clone common tree
-      if: |
-        github.event.inputs.COMMON_TREE_URL != ''
-        && github.event.inputs.COMMON_PATH != ''
-      run: |
-        cd ${{ steps.pwd.outputs.workspace-folder }}/arrow/
-        git clone ${{ github.event.inputs.COMMON_TREE_URL }} -b ${{ github.event.inputs.DEVICE_TREE_BRANCH }} ./${{ github.event.inputs.COMMON_PATH }}
-      working-directory: ${{ steps.pwd.outputs.workspace-folder }}
+      - name: Add device manifest
+        working-directory: ${{ env.BUILD_DIR }}
+        run: |
+          mkdir -p .repo/local_manifests
+          cat > .repo/local_manifests/device.xml << 'EOF'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <manifest>
+            <remote name="LineageOS"
+                    fetch="https://github.com/LineageOS"
+                    review="code.lineageos.org" />
+            <project path="device/xiaomi/ginkgo"
+                     name="android_device_xiaomi_ginkgo"
+                     remote="LineageOS"
+                     revision="${{ github.event.inputs.branch }}" />
+            <project path="kernel/xiaomi/sm6125"
+                     name="android_kernel_xiaomi_sm6125"
+                     remote="LineageOS"
+                     revision="${{ github.event.inputs.branch }}" />
+            <project path="vendor/xiaomi/ginkgo"
+                     name="proprietary_vendor_xiaomi_ginkgo"
+                     remote="LineageOS"
+                     revision="${{ github.event.inputs.branch }}" />
+          </manifest>
+          EOF
 
-    - name: Set Swap Space
-      uses: pierotofy/set-swap-space@master
-      with:
-        swap-size-gb: 12
+      - name: Sync sources
+        working-directory: ${{ env.BUILD_DIR }}
+        run: |
+          repo sync -c --no-clone-bundle --no-tags --optimized-fetch --force-sync -j$(nproc)
+          repo start --branch ${{ github.event.inputs.branch }} --all
 
-    - name: Build ArrowOS ROM
-      run: |
-        cd ${{ steps.pwd.outputs.workspace-folder }}/arrow/
-        . build/envsetup.sh
-        
-        # Forzar compilación Vanilla sin GApps
-        export ARROW_GAPPS=false
-        
-        # Configurar nombre de ROM personalizada y Mantenedor
-        export CUSTOM_REARROW=true
-        export ARROW_MAINTAINER="jvn2012"
-        
-        lunch ${{ github.event.inputs.MAKEFILE_NAME }}
-        m otapackage
-      working-directory: ${{ steps.pwd.outputs.workspace-folder }}
-      continue-on-error: true
+      - name: Enable ccache
+        run: ccache -M 100G
 
-    - name: Check the output directory before uploading
-      run: |
-        ls -al ${{ steps.pwd.outputs.workspace-folder }}/arrow/out/target/product/
-        echo
-        ls -al ${{ steps.pwd.outputs.workspace-folder }}/arrow/out/target/product/${{ github.event.inputs.DEVICE_NAME }}/
+      - name: Build
+        working-directory: ${{ env.BUILD_DIR }}
+        run: |
+          source build/envsetup.sh
+          breakfast ${{ env.DEVICE }}
+          croot
+          brunch ${{ env.DEVICE }}
 
-    - name: Upload to Release
-      uses: softprops/action-gh-release@v1
-      with:
-        files: |
-          ${{ steps.pwd.outputs.workspace-folder }}/arrow/out/target/product/${{ github.event.inputs.DEVICE_NAME }}/*.zip
-        name: "ReArrowOS 13.1 - ${{ github.event.inputs.DEVICE_NAME }}"
-        tag_name: ${{ github.run_id }}
-        body: |
-          **ROM:** ReArrowOS 13.1 (Vanilla)
-          **Maintainer:** jvn2012
-          **Device:** ${{ github.event.inputs.DEVICE_NAME }}
-          **Manifest Branch:** ${{ github.event.inputs.MANIFEST_BRANCH }}
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Upload build artifacts
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lineage-19.0-ginkgo
+          path: |
+            ${{ env.BUILD_DIR }}/out/target/product/ginkgo/lineage-19.0-*-UNOFFICIAL-ginkgo.zip
+            ${{ env.BUILD_DIR }}/out/target/product/ginkgo/recovery.img
+          retention-days: 7
+
+      - name: Publish release
+        if: success()
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: lineage-19.0-ginkgo-${{ github.run_number }}
+          files: |
+            ${{ env.BUILD_DIR }}/out/target/product/ginkgo/lineage-19.0-*-UNOFFICIAL-ginkgo.zip
+            ${{ env.BUILD_DIR }}/out/target/product/ginkgo/recovery.img   
