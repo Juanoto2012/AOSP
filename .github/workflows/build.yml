@@ -1,9 +1,9 @@
-name: The A13 Proyect by JVN2012
+name: ReArrow OS by JVN2012
 
 on: workflow_dispatch
 
 jobs:
-  build-for-ginkgo:
+  build-rearrow-ginkgo:
     runs-on: ubuntu-22.04
     
     steps:
@@ -18,72 +18,68 @@ jobs:
           remove-codeql: 'true'
           remove-docker-images: 'true'
 
-      - name: Setting up Build Directories
-        run: |
-          mkdir -p ~/bin
-          mkdir -p ~/android/lineage
-
-      - name: Installing Dependencies from Apt
+      - name: Install Build Dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y bc bison build-essential ccache curl flex g++-multilib gcc-multilib git gnupg gperf imagemagick lib32ncurses5-dev lib32readline-dev lib32z1-dev liblz4-tool libncurses5 libncurses5-dev libsdl1.2-dev libssl-dev libxml2 libxml2-utils lzop pngcrush rsync schedtool squashfs-tools xsltproc zip zlib1g-dev git curl python3
 
-      - name: Installing "repo" Tool
+      - name: Setup ccache (Progress Saver)
+        uses: hendrikmi/ccache-action@v1.2.11
+        with:
+          max-size: 10G
+          key: rearrow-ginkgo-${{ github.run_id }}
+          restore-keys: |
+            rearrow-ginkgo-
+
+      - name: Setup Repo Tool & Git
         run: |
+          mkdir -p ~/bin
           curl https://storage.googleapis.com/git-repo-downloads/repo > ~/bin/repo
           chmod a+x ~/bin/repo
-
-      - name: Authenticating "repo" with GitHub Account
-        run: |
-          git config --global user.email "jvn2012@example.com"
+          git config --global user.email "2402776722@qq.com"
           git config --global user.name "JVN2012"
 
-      - name: Enabling Caching
+      - name: Initialize & Sync ArrowOS (Super Fast)
+        run: |
+          mkdir -p ~/android/rearrow
+          cd ~/android/rearrow
+          # Inicializamos el código base de ArrowOS 13
+          ~/bin/repo init -u https://github.com/ArrowOS/android_manifest.git -b arrow-13.0 --git-lfs --depth=1
+          ~/bin/repo sync -c -j$(nproc --all) --force-sync --no-clone-bundle --no-tags --optimized-fetch --prune
+
+      - name: Clone Device Trees (Ginkgo)
+        working-directory: ~/android/rearrow
+        run: |
+          # Clones superficiales (solo descargan lo esencial de la rama sin historial)
+          git clone --depth=1 https://github.com/LineageOS/android_device_xiaomi_ginkgo.git -b lineage-20.0 device/xiaomi/ginkgo
+          git clone --depth=1 https://github.com/LineageOS/android_device_xiaomi_sm6125-common.git -b lineage-20.0 device/xiaomi/sm6125-common
+          git clone --depth=1 https://github.com/LineageOS/android_kernel_xiaomi_sm6125.git -b lineage-20.0 kernel/xiaomi/sm6125
+          git clone --depth=1 https://gitlab.com/the-muppets/proprietary_vendor_xiaomi.git -b lineage-20.0 vendor/xiaomi
+
+      - name: Build ReArrow OS
+        working-directory: ~/android/rearrow
         run: |
           export USE_CCACHE=1
           export CCACHE_EXEC=/usr/bin/ccache
-          ccache -M 50G
-
-      - name: Setting Up Local Repo (Android 13)
-        working-directory: ~/android/lineage
-        run: |
-          ~/bin/repo init -u https://github.com/LineageOS/android.git -b lineage-20.0 --git-lfs
-          ~/bin/repo sync -c -j$(nproc --all) --force-sync --no-clone-bundle --no-tags
-
-      - name: Setting Up Ginkgo Build Environment
-        working-directory: ~/android/lineage
-        run: |
-          git clone https://github.com/LineageOS/android_device_xiaomi_ginkgo.git -b lineage-20.0 device/xiaomi/ginkgo
-          git clone https://github.com/LineageOS/android_device_xiaomi_sm6125-common.git -b lineage-20.0 device/xiaomi/sm6125-common
-          git clone https://github.com/LineageOS/android_kernel_xiaomi_sm6125.git -b lineage-20.0 kernel/xiaomi/sm6125
-          git clone https://gitlab.com/the-muppets/proprietary_vendor_xiaomi.git -b lineage-20.0 vendor/xiaomi
-          
-      - name: Starting Build Process
-        working-directory: ~/android/lineage
-        run: |
           source build/envsetup.sh
-          lunch lineage_ginkgo-userdebug
+          # Comando de compilación de ArrowOS
+          lunch arrow_ginkgo-userdebug
           mka bacon
 
-      - name: Get current time
-        uses: srfrnk/current-time@master
-        id: current-time
-        with:
-          format: DD-MM-YYYY
-
-      - name: Uploading Build to Releases
+      - name: Upload Release
+        if: success()
         uses: softprops/action-gh-release@v1
         with:
-          name: "The A13 Proyect by JVN2012 - ${{ steps.current-time.outputs.formattedTime }}"
-          tag_name: "A13-${{ steps.current-time.outputs.formattedTime }}"
+          name: "ReArrow OS by JVN2012 - Ginkgo"
+          tag_name: "ReArrow-A13-${{ github.run_number }}"
           prerelease: false
           body: |
-            This is an Automatic Release by GitHub Actions.
-            Device: Xiaomi Redmi Note 8 (ginkgo)
-            Android Version: 13
+            **ReArrow OS (Android 13)**
             Maintainer: JVN2012
+            Device: Xiaomi Redmi Note 8 (ginkgo)
+            Custom build compiled via GitHub Actions.
           files: |
-            ~/android/lineage/out/target/product/ginkgo/recovery.img
-            ~/android/lineage/out/target/product/ginkgo/*ginkgo*.zip
+            ~/android/rearrow/out/target/product/ginkgo/recovery.img
+            ~/android/rearrow/out/target/product/ginkgo/*ginkgo*.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
