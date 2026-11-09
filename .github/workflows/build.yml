@@ -61,10 +61,21 @@ jobs:
         run: |
           export USE_CCACHE=1
           export CCACHE_EXEC=/usr/bin/ccache
+          
+          # Truco: Adaptar el Device Tree de Lineage a Arrow
+          cd device/xiaomi/ginkgo
+          mv lineage_ginkgo.mk arrow_ginkgo.mk
+          sed -i 's/lineage_ginkgo/arrow_ginkgo/g' arrow_ginkgo.mk
+          sed -i 's/lineage_ginkgo/arrow_ginkgo/g' AndroidProducts.mk
+          cd ../../../
+          
+          # Enlazar python3 a python para evitar errores del repo
+          sudo ln -sf /usr/bin/python3 /usr/bin/python
+          
           source build/envsetup.sh
-          # Comando de compilación de ArrowOS
           lunch arrow_ginkgo-userdebug
           mka bacon
+        
 
       - name: Upload Release
         if: success()
