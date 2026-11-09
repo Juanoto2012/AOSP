@@ -1,99 +1,152 @@
-name: ReArrow OS by JVN2012
+name: Build ReArrowOS ROM
 
-on: workflow_dispatch
+on:
+  workflow_dispatch:
+    inputs:
+      SYNC_URL:
+        description: 'SYNC_URL'
+        required: true
+        default: 'https://github.com/ArrowOS/android_manifest.git'
+      MANIFEST_BRANCH:
+        description: 'MANIFEST_BRANCH'
+        required: true
+        default: 'arrow-13.1'
+      DEVICE_TREE_URL:
+        description: 'DEVICE_TREE_URL'
+        required: true
+        default: 'https://github.com'
+      DEVICE_TREE_BRANCH:
+        description: 'DEVICE_TREE_BRANCH'
+        required: true
+        default: 'arrow-13.1'
+      DEVICE_PATH:
+        description: 'DEVICE_PATH'
+        required: true
+        default: 'device/xiaomi/ginkgo'
+      COMMON_TREE_URL:
+        description: 'COMMON_TREE_URL (leave blank if not needed)'
+        required: false
+        default: ''
+      COMMON_PATH:
+        description: 'COMMON_PATH (leave blank if not needed)'
+        required: false
+        default: ''
+      DEVICE_NAME:
+        description: 'DEVICE_NAME'
+        required: true
+        default: 'ginkgo'
+      MAKEFILE_NAME:
+        description: 'MAKEFILE_NAME'
+        required: true
+        default: 'arrow_ginkgo-userdebug'
 
 jobs:
-  build-rearrow-ginkgo:
-    runs-on: ubuntu-22.04
-    
+  build-arrowos:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
-      - name: Maximize Build Space
-        uses: easimon/maximize-build-space@master
-        with:
-          root-reserve-mb: 8192
-          swap-size-mb: 8192
-          remove-dotnet: 'true'
-          remove-android: 'true'
-          remove-haskell: 'true'
-          remove-codeql: 'true'
-          remove-docker-images: 'true'
+    - name: Check if sender is repository owner
+      if: github.event.repository.owner.login == github.event.sender.login
+      run: |
+        echo "Sender is the repository owner"
+    - name: Not the repository owner
+      if: github.event.repository.owner.login != github.event.sender.login
+      run: |
+        echo "Sender is not the repository owner"
+        exit 1
 
-      - name: Install Build Dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y bc bison build-essential ccache curl flex g++-multilib gcc-multilib git gnupg gperf imagemagick lib32ncurses5-dev lib32readline-dev lib32z1-dev liblz4-tool libncurses5-dev libsdl1.2-dev libssl-dev libxml2 libxml2-utils lzop pngcrush rsync schedtool squashfs-tools xsltproc zip zlib1g-dev git curl python3
+    - name: Cleanup
+      uses: rokibhasansagar/slimhub_actions@main
 
-      - name: Setup ccache (Progress Saver - Official)
-        uses: actions/cache@v4
-        with:
-          path: ~/.ccache
-          key: rearrow-ginkgo-${{ github.run_id }}
-          restore-keys: |
-            rearrow-ginkgo-
+    - name: Initialize workspace
+      run: |
+        mkdir workspace
+        cd workspace
+        echo "workspace-folder=$(pwd)" >> $GITHUB_OUTPUT
+      id: pwd
+      
+    - name: Setup Java
+      uses: actions/setup-java@v4
+      with:
+        distribution: 'oracle'
+        java-version: 22
+      
+    - name: Prepare the build environment
+      run: |
+        cd ${{ steps.pwd.outputs.workspace-folder }}
+        sudo apt install git aria2 ccache -y
+        sudo curl --create-dirs -L -o /usr/local/bin/repo -O -L https://storage.googleapis.com/git-repo-downloads/repo
+        sudo chmod a+rx /usr/local/bin/repo
+        mkdir ${{ steps.pwd.outputs.workspace-folder }}/ccache
+        export USE_CCACHE=1
+        export CCACHE_DIR=${{ steps.pwd.outputs.workspace-folder }}/ccache/
+        ccache -M 50G
+      working-directory: ${{ steps.pwd.outputs.workspace-folder }}
 
-      - name: Setup Repo Tool & Git
-        run: |
-          mkdir -p ~/bin
-          curl https://storage.googleapis.com/git-repo-downloads/repo > ~/bin/repo
-          chmod a+x ~/bin/repo
-          git config --global user.email "2402776722@qq.com"
-          git config --global user.name "JVN2012"
+    - name: Clone and sync ArrowOS sources
+      run: |
+        cd ${{ steps.pwd.outputs.workspace-folder }}
+        mkdir arrow
+        cd arrow
+        repo init -u ${{ github.event.inputs.SYNC_URL }} -b ${{ github.event.inputs.MANIFEST_BRANCH }}
+        repo sync
+      working-directory: ${{ steps.pwd.outputs.workspace-folder }}
 
-      - name: Initialize & Sync ArrowOS (Super Fast)
-        run: |
-          mkdir -p ~/android/rearrow
-          cd ~/android/rearrow
-          # Descarga optimizada sin historial viejo
-          ~/bin/repo init -u https://github.com/ArrowOS/android_manifest.git -b arrow-13.0 --git-lfs --depth=1
-          ~/bin/repo sync -c -j$(nproc --all) --force-sync --no-clone-bundle --no-tags --optimized-fetch --prune
+    - name: Clone device tree
+      run: |
+        cd ${{ steps.pwd.outputs.workspace-folder }}/arrow/
+        git clone ${{ github.event.inputs.DEVICE_TREE_URL }} -b ${{ github.event.inputs.DEVICE_TREE_BRANCH }} ./${{ github.event.inputs.DEVICE_PATH }}
+      working-directory: ${{ steps.pwd.outputs.workspace-folder }}
 
-      - name: Clone Device Trees (Ginkgo)
-        working-directory: ~/android/rearrow
-        run: |
-          # Descarga de los drivers del Xiaomi Redmi Note 8
-          git clone --depth=1 https://github.com/LineageOS/android_device_xiaomi_ginkgo.git -b lineage-20.0 device/xiaomi/ginkgo
-          git clone --depth=1 https://github.com/LineageOS/android_device_xiaomi_sm6125-common.git -b lineage-20.0 device/xiaomi/sm6125-common
-          git clone --depth=1 https://github.com/LineageOS/android_kernel_xiaomi_sm6125.git -b lineage-20.0 kernel/xiaomi/sm6125
-          git clone --depth=1 https://gitlab.com/the-muppets/proprietary_vendor_xiaomi.git -b lineage-20.0 vendor/xiaomi
+    - name: Clone common tree
+      if: |
+        github.event.inputs.COMMON_TREE_URL != ''
+        && github.event.inputs.COMMON_PATH != ''
+      run: |
+        cd ${{ steps.pwd.outputs.workspace-folder }}/arrow/
+        git clone ${{ github.event.inputs.COMMON_TREE_URL }} -b ${{ github.event.inputs.DEVICE_TREE_BRANCH }} ./${{ github.event.inputs.COMMON_PATH }}
+      working-directory: ${{ steps.pwd.outputs.workspace-folder }}
 
-      - name: Prepare & Build ReArrow OS
-        working-directory: ~/android/rearrow
-        run: |
-          export USE_CCACHE=1
-          export CCACHE_EXEC=/usr/bin/ccache
-          export CCACHE_DIR=~/.ccache
-          
-          # PREVENCIÓN 1: Enlazar python3 a python para evitar errores de binarios antiguos
-          sudo ln -sf /usr/bin/python3 /usr/bin/python
-          
-          # PREVENCIÓN 2: Convertir los archivos de configuración de Lineage a Arrow automáticamente
-          cd device/xiaomi/ginkgo
-          if [ -f lineage_ginkgo.mk ]; then
-            mv lineage_ginkgo.mk arrow_ginkgo.mk
-            sed -i 's/lineage_ginkgo/arrow_ginkgo/g' arrow_ginkgo.mk
-            sed -i 's/lineage_ginkgo/arrow_ginkgo/g' AndroidProducts.mk
-          fi
-          cd ../../../
-          
-          # Compilar el sistema
-          source build/envsetup.sh
-          lunch arrow_ginkgo-userdebug
-          mka bacon
+    - name: Set Swap Space
+      uses: pierotofy/set-swap-space@master
+      with:
+        swap-size-gb: 12
 
-      - name: Upload Release
-        if: success()
-        uses: softprops/action-gh-release@v1
-        with:
-          name: "ReArrow OS by JVN2012 - Ginkgo"
-          tag_name: "ReArrow-A13-${{ github.run_number }}"
-          prerelease: false
-          body: |
-            **ReArrow OS (Android 13)**
-            Maintainer: JVN2012
-            Device: Xiaomi Redmi Note 8 (ginkgo)
-            Custom build compiled via GitHub Actions.
-          files: |
-            ~/android/rearrow/out/target/product/ginkgo/recovery.img
-            ~/android/rearrow/out/target/product/ginkgo/*ginkgo*.zip
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    - name: Build ArrowOS ROM
+      run: |
+        cd ${{ steps.pwd.outputs.workspace-folder }}/arrow/
+        . build/envsetup.sh
+        
+        # Forzar compilación Vanilla sin GApps
+        export ARROW_GAPPS=false
+        
+        # Configurar nombre de ROM personalizada y Mantenedor
+        export CUSTOM_REARROW=true
+        export ARROW_MAINTAINER="jvn2012"
+        
+        lunch ${{ github.event.inputs.MAKEFILE_NAME }}
+        m otapackage
+      working-directory: ${{ steps.pwd.outputs.workspace-folder }}
+      continue-on-error: true
+
+    - name: Check the output directory before uploading
+      run: |
+        ls -al ${{ steps.pwd.outputs.workspace-folder }}/arrow/out/target/product/
+        echo
+        ls -al ${{ steps.pwd.outputs.workspace-folder }}/arrow/out/target/product/${{ github.event.inputs.DEVICE_NAME }}/
+
+    - name: Upload to Release
+      uses: softprops/action-gh-release@v1
+      with:
+        files: |
+          ${{ steps.pwd.outputs.workspace-folder }}/arrow/out/target/product/${{ github.event.inputs.DEVICE_NAME }}/*.zip
+        name: "ReArrowOS 13.1 - ${{ github.event.inputs.DEVICE_NAME }}"
+        tag_name: ${{ github.run_id }}
+        body: |
+          **ROM:** ReArrowOS 13.1 (Vanilla)
+          **Maintainer:** jvn2012
+          **Device:** ${{ github.event.inputs.DEVICE_NAME }}
+          **Manifest Branch:** ${{ github.event.inputs.MANIFEST_BRANCH }}
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
